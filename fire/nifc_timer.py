@@ -223,7 +223,10 @@ def _map_line(inc):
     pre = ""
     if home:
         pre = f"{_dist_mi(*home, inc['lat'], inc['lon']):.0f}mi {_bearing(*home, inc['lat'], inc['lon'])} "
-    return f"🗺️ {pre}https://www.google.com/maps?q={inc['lat']:.4f},{inc['lon']:.4f}"
+    # %2C (encoded comma), not a literal ',': the Meshtastic Android app's URL
+    # linkifier regex has no comma in its char class and truncates the link at
+    # the first ',' (dropping the longitude). %2C survives + Maps decodes it.
+    return f"🗺️ {pre}https://www.google.com/maps?q={inc['lat']:.4f}%2C{inc['lon']:.4f}"
 
 
 # Waypoint.icon codepoint — Meshtastic apps render it as the map pin, so the
