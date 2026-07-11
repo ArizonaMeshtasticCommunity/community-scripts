@@ -368,7 +368,10 @@ def format_event_text(ev):
     ts      = fmt_unix_ts(ev.get("LastUpdated"))
     lat     = ev.get("Latitude",  0.0)
     lon     = ev.get("Longitude", 0.0)
-    map_url = f"https://www.google.com/maps?q={lat:.4f},{lon:.4f}"
+    # %2C (encoded comma), not a literal ',': the Meshtastic Android app's URL
+    # linkifier regex has no comma in its char class and truncates the link at
+    # the first ',' (dropping the longitude). %2C survives + Maps decodes it.
+    map_url = f"https://www.google.com/maps?q={lat:.4f}%2C{lon:.4f}"
     return clamp(f"{head}\n⌚ {ts}\n📍 {map_url}")
 
 
