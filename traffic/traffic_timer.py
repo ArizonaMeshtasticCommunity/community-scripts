@@ -228,11 +228,48 @@ _FREEWAY_RE = re.compile(r'^(I-\d+|L-\d+|US-\d+)\b')
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers — pure, importable by trigger
 # ─────────────────────────────────────────────────────────────────────────────
+# Tucson-area agencies (Tucson PD, Pima County SO, Pima CC DPS, …) export their
+# CAD dispatch record into the ADOT feed verbatim: KEY: VALUE lines. The only
+# field with traveler value is the location; AGENCY/BEAT/STATUS/OPEN TIME are
+# dispatch-internal. Real example that went over the air:
+#   MVA CROSS STREETS: N GREASEWOOD RD AND W DRACHMAN ST
+#   OPEN TIME: 16:10:49 07/21/2026
+#   UNIT ON SCENE: 17:32:34 07/21/2026
+# — verbose enough to truncate the map link, which is the line that matters.
+_DISPATCH_KEY_RE = re.compile(
+    r"^\s*(CROSS STREETS|LOCATION|AGENCY|BEAT|STATUS|OPEN TIME|CLOSE TIME|"
+    r"UNIT ON SCENE|CASE|INCIDENT|DISPOSITION)\s*:\s*(.*?)\s*$",
+    re.I | re.M)
+_DISPATCH_LOC_KEYS = ("CROSS STREETS", "LOCATION")
+
+
+def sanitize_dispatch(text):
+    """Reduce an agency CAD dispatch blob to its location, uniformly formatted
+    ('A / B', sub-detail after '·'). Text without a KEY: VALUE dispatch block
+    passes through untouched — ADOT's own descriptions never match."""
+    if not text or ":" not in text:
+        return text
+    matches = _DISPATCH_KEY_RE.findall(text)
+    if not matches:
+        return text
+    loc = next((v for k, v in matches
+                if k.upper() in _DISPATCH_LOC_KEYS and v.strip()), "")
+    if not loc:
+        # Dispatch block without a location key — drop the block lines, keep
+        # whatever prose remains (or the original if that leaves nothing).
+        rest = _DISPATCH_KEY_RE.sub("", text).strip()
+        return rest or text
+    loc = re.sub(r"\s+AND\s+", " / ", loc, flags=re.I)
+    loc = re.sub(r"\s*&\s*", " / ", loc)
+    loc = re.sub(r"\s*;\s*", " · ", loc)
+    return loc.strip()
+
+
 def normalize_roadway(text):
     """Normalize ADOT RoadwayName: fix highway abbreviations, strip dispatch noise."""
     if not text:
         return "Road"
-    text = str(text).strip()
+    text = sanitize_dispatch(str(text).strip())
     text = _ADOT_NOISE_RE.sub("", text).strip().strip(",").strip()
     text = text.upper()
     text = re.sub(r'\bI[- ]?(\d+)\b',          r'I-\1',  text)
@@ -278,11 +315,14 @@ def match_zone(ev):
     return None
 
 def fingerprint(ev):
-    """Dedup fingerprint: event ID + description.
+    """Dedup fingerprint: event ID + SANITIZED description.
     Catches genuine re-issues (description changed = ADOT thinks it's news)
-    while collapsing identical re-polls."""
+    while collapsing identical re-polls. Sanitized because the Tucson agencies'
+    CAD STATUS churn (RCVD → DEPUTY EN → DEPUTY ON → DOING PAPERWORK) edits the
+    description at every dispatch step — the same crash re-broadcast up to
+    4x/day as 'news'. Location/type changes still re-fire."""
     eid  = str(ev.get("ID") or ev.get("Id") or "0")
-    desc = str(ev.get("Description") or "")
+    desc = sanitize_dispatch(str(ev.get("Description") or ""))
     return hashlib.md5(f"{eid}{desc}".encode()).hexdigest()
 
 def stable_wp_id(eid):
