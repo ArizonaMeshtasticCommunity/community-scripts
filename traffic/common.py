@@ -46,12 +46,14 @@ USER_AGENT = os.getenv(
     ""
 )
 
-# Tighter than typical 200 to guarantee single-packet delivery on SF7/MediumFast.
-# Emoji are 3-4 bytes each in UTF-8 — a message with 5 emoji eats ~20 bytes of
-# overhead. 180 chars gives ~50 bytes of headroom for safe single-packet TX.
-MAX_LEN = int(os.getenv("MM_MAX_LEN", "180"))
+# The radio's usable text payload is ~200 BYTES, and the byte guard below
+# already enforces it exactly. MAX_LEN previously sat at 180 chars as extra
+# "headroom", but that char cap was pure loss on top of the byte budget — and
+# it's what amputated a live Extreme Heat Warning's expiry line into
+# "Exp Mon Jul..." (2026-07-22). The wire is 200: let bytes be the authority.
+MAX_LEN = int(os.getenv("MM_MAX_LEN", "200"))
 # Meshtastic's text payload limit is BYTE-based (~200 usable). clamp() enforces
-# this too, so an emoji-heavy message under 180 chars can't overflow the packet.
+# this too, so an emoji-heavy message under the char cap can't overflow the packet.
 MAX_BYTES = int(os.getenv("MM_MAX_BYTES", "200"))
 
 STATE_DIR = Path(os.getenv("MM_STATE_DIR", "/data/scripts/state"))
@@ -99,6 +101,14 @@ def http_get_json(
             req = urllib.request.Request(url, headers=req_headers)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # 4xx is a hard answer — retrying a 404 just burns the time budget.
+            # 5xx may be transient; let it take the retry path below.
+            if e.code < 500:
+                raise
+            last_exc = e
+            if attempt < retries:
+                time.sleep(HTTP_BACKOFF * attempt)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
             last_exc = e
             if attempt < retries:
@@ -125,10 +135,16 @@ def clamp(s: str, max_len: int = MAX_LEN, max_bytes: int = MAX_BYTES) -> str:
     if len(s) > max_len:
         s = s[:max_len - 3]
         truncated = True
-    # Byte-budget guard — reserve 3 bytes for the '...' and drop whole chars.
-    while s and len(s.encode("utf-8")) > max_bytes - 3:
-        s = s[:-1]
+    # Byte-budget guard. Reserve the 3 '...' bytes only once truncation is
+    # actually REQUIRED — the old unconditional `> max_bytes - 3` loop
+    # truncated messages that already fit exactly, and from the END, which is
+    # where composers put the expiry line. Caught live 2026-07-22: a heat
+    # warning composed to exactly 200 bytes went OTA as 'Exp Mon Jul...'.
+    if len(s.encode("utf-8")) > max_bytes:
         truncated = True
+    if truncated:
+        while s and len(s.encode("utf-8")) > max_bytes - 3:
+            s = s[:-1]
     return (s.rstrip() + "...") if truncated else s
 
 def deg_to_cardinal(deg) -> str:
