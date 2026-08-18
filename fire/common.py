@@ -34,8 +34,9 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +175,49 @@ def m_to_mi(m: float) -> float:
     return m * 0.00062137119
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Local time — ONE definition, used by every script
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠ NEVER call a bare `.astimezone()` (no argument). It resolves against the
+# HOST's timezone, so the same script prints different times on different
+# machines — and most servers run UTC, which is 7 hours off Arizona local.
+#
+# That is not just a formatting nit: `is_night()` below is a 6am/6pm rule, and
+# evaluating it in UTC on a UTC-7 mesh does not shift the answer, it INVERTS it
+# for 12 of every 24 hours — putting a 🌙 on a clear midday forecast. Verified on
+# a UTC host: the old code returned is_night("2026-08-17T19:00:00Z") = True for
+# what is noon in Arizona.
+#
+# Set TZ in the environment to override; otherwise these scripts state Arizona.
+def _resolve_local_tz():
+    """TZ from the environment, else Arizona, else UTC. Never raises — a bad TZ
+    value must not take a broadcast down."""
+    for name in (os.getenv("TZ"), "America/Phoenix"):
+        if not name:
+            continue
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            continue
+    return timezone.utc
+
+
+TZ = _resolve_local_tz()
+
+
+def now_local() -> datetime:
+    """Current time, aware, in the script-local zone."""
+    return datetime.now(TZ)
+
+
+def to_local(dt: datetime) -> datetime:
+    """Convert an aware datetime to the script-local zone. A naive input is read
+    as UTC — never as host-local, which is the very inheritance this replaces."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(TZ)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Day/night + weather emoji
 # ─────────────────────────────────────────────────────────────────────────────
 def is_night(ts_iso: str | None = None) -> bool:
@@ -183,11 +227,11 @@ def is_night(ts_iso: str | None = None) -> bool:
     """
     try:
         if ts_iso:
-            dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00")).astimezone()
+            dt = to_local(datetime.fromisoformat(ts_iso.replace("Z", "+00:00")))
             return dt.hour < 6 or dt.hour >= 18
     except Exception:
         pass
-    h = datetime.now().hour
+    h = now_local().hour
     return h < 6 or h >= 18
 
 def wx_emoji(desc: str, *, night: bool | None = None) -> str:
@@ -410,60 +454,6 @@ def fetch_with_fallback(url: str, cache_name: str, tag: str = "common", **kwargs
         except Exception:
             pass
     return None
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Synoptic Data API (synopticdata.com) — mesonet observations
-# ─────────────────────────────────────────────────────────────────────────────
-SYNOPTIC_BASE  = "https://api.synopticdata.com/v2"
-SYNOPTIC_TOKEN = os.getenv("SYNOPTIC_TOKEN", "")
-
-# UNIT GOTCHA (verified live 2026-07-06): units=english returns wind in KNOTS,
-# not mph — the speed override below is mandatory. Everything else in english
-# is what you'd expect (°F, statute miles, inches, inHg altimeter).
-SYNOPTIC_UNITS = "english,speed|mph"
-
-def synoptic_get(endpoint, cache_name=None, cache_ttl=300, **params):
-    """
-    GET a Synoptic v2 endpoint (e.g. "stations/latest") with token + english
-    units applied. Raises on HTTP failure or an API-level error response.
-
-    cache_name enables a short-TTL response cache so a burst of responder
-    requests from the mesh reuses one upstream fetch instead of multiplying
-    API calls — be a good citizen on the free tier. SRP-network uploads batch
-    every ~15-20 min anyway, so a 5-min cache costs no freshness.
-    """
-    if cache_name:
-        hit = load_cache(cache_name, cache_ttl)
-        if hit is not None:
-            return hit
-    if not SYNOPTIC_TOKEN:
-        raise RuntimeError("SYNOPTIC_TOKEN env var not set (data/secrets.env)")
-    params.setdefault("units", SYNOPTIC_UNITS)
-    params["token"] = SYNOPTIC_TOKEN
-    url = f"{SYNOPTIC_BASE}/{endpoint}?{urllib.parse.urlencode(params)}"
-    data = http_get_json(url)
-    summary = (data or {}).get("SUMMARY") or {}
-    if summary.get("RESPONSE_CODE") != 1:
-        raise RuntimeError(f"synoptic API error: {summary.get('RESPONSE_MESSAGE')}")
-    if cache_name:
-        save_cache(cache_name, data)
-    return data
-
-def synoptic_stations(data):
-    """Map a Synoptic response's STATION list into {STID: station_record}."""
-    return {s.get("STID"): s for s in (data or {}).get("STATION") or []}
-
-def synoptic_val(station, var):
-    """
-    Latest-endpoint observation value for a variable, trying the sensor slot
-    then the derived slot (_1d). Returns (value, iso_datetime) or (None, None).
-    """
-    obs = (station or {}).get("OBSERVATIONS") or {}
-    for key in (f"{var}_value_1", f"{var}_value_1d"):
-        v = obs.get(key)
-        if isinstance(v, dict) and v.get("value") is not None:
-            return v.get("value"), v.get("date_time")
-    return None, None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Smart dedup — numerical bucketing + max-silence backstop
