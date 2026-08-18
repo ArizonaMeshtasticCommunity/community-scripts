@@ -34,8 +34,9 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +175,49 @@ def m_to_mi(m: float) -> float:
     return m * 0.00062137119
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Local time — ONE definition, used by every script
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠ NEVER call a bare `.astimezone()` (no argument). It resolves against the
+# HOST's timezone, so the same script prints different times on different
+# machines — and most servers run UTC, which is 7 hours off Arizona local.
+#
+# That is not just a formatting nit: `is_night()` below is a 6am/6pm rule, and
+# evaluating it in UTC on a UTC-7 mesh does not shift the answer, it INVERTS it
+# for 12 of every 24 hours — putting a 🌙 on a clear midday forecast. Verified on
+# a UTC host: the old code returned is_night("2026-08-17T19:00:00Z") = True for
+# what is noon in Arizona.
+#
+# Set TZ in the environment to override; otherwise these scripts state Arizona.
+def _resolve_local_tz():
+    """TZ from the environment, else Arizona, else UTC. Never raises — a bad TZ
+    value must not take a broadcast down."""
+    for name in (os.getenv("TZ"), "America/Phoenix"):
+        if not name:
+            continue
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            continue
+    return timezone.utc
+
+
+TZ = _resolve_local_tz()
+
+
+def now_local() -> datetime:
+    """Current time, aware, in the script-local zone."""
+    return datetime.now(TZ)
+
+
+def to_local(dt: datetime) -> datetime:
+    """Convert an aware datetime to the script-local zone. A naive input is read
+    as UTC — never as host-local, which is the very inheritance this replaces."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(TZ)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Day/night + weather emoji
 # ─────────────────────────────────────────────────────────────────────────────
 def is_night(ts_iso: str | None = None) -> bool:
@@ -183,11 +227,11 @@ def is_night(ts_iso: str | None = None) -> bool:
     """
     try:
         if ts_iso:
-            dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00")).astimezone()
+            dt = to_local(datetime.fromisoformat(ts_iso.replace("Z", "+00:00")))
             return dt.hour < 6 or dt.hour >= 18
     except Exception:
         pass
-    h = datetime.now().hour
+    h = now_local().hour
     return h < 6 or h >= 18
 
 def wx_emoji(desc: str, *, night: bool | None = None) -> str:
