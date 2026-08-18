@@ -36,7 +36,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -454,60 +454,6 @@ def fetch_with_fallback(url: str, cache_name: str, tag: str = "common", **kwargs
         except Exception:
             pass
     return None
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Synoptic Data API (synopticdata.com) — mesonet observations
-# ─────────────────────────────────────────────────────────────────────────────
-SYNOPTIC_BASE  = "https://api.synopticdata.com/v2"
-SYNOPTIC_TOKEN = os.getenv("SYNOPTIC_TOKEN", "")
-
-# UNIT GOTCHA (verified live 2026-07-06): units=english returns wind in KNOTS,
-# not mph — the speed override below is mandatory. Everything else in english
-# is what you'd expect (°F, statute miles, inches, inHg altimeter).
-SYNOPTIC_UNITS = "english,speed|mph"
-
-def synoptic_get(endpoint, cache_name=None, cache_ttl=300, **params):
-    """
-    GET a Synoptic v2 endpoint (e.g. "stations/latest") with token + english
-    units applied. Raises on HTTP failure or an API-level error response.
-
-    cache_name enables a short-TTL response cache so a burst of responder
-    requests from the mesh reuses one upstream fetch instead of multiplying
-    API calls — be a good citizen on the free tier. SRP-network uploads batch
-    every ~15-20 min anyway, so a 5-min cache costs no freshness.
-    """
-    if cache_name:
-        hit = load_cache(cache_name, cache_ttl)
-        if hit is not None:
-            return hit
-    if not SYNOPTIC_TOKEN:
-        raise RuntimeError("SYNOPTIC_TOKEN env var not set (data/secrets.env)")
-    params.setdefault("units", SYNOPTIC_UNITS)
-    params["token"] = SYNOPTIC_TOKEN
-    url = f"{SYNOPTIC_BASE}/{endpoint}?{urllib.parse.urlencode(params)}"
-    data = http_get_json(url)
-    summary = (data or {}).get("SUMMARY") or {}
-    if summary.get("RESPONSE_CODE") != 1:
-        raise RuntimeError(f"synoptic API error: {summary.get('RESPONSE_MESSAGE')}")
-    if cache_name:
-        save_cache(cache_name, data)
-    return data
-
-def synoptic_stations(data):
-    """Map a Synoptic response's STATION list into {STID: station_record}."""
-    return {s.get("STID"): s for s in (data or {}).get("STATION") or []}
-
-def synoptic_val(station, var):
-    """
-    Latest-endpoint observation value for a variable, trying the sensor slot
-    then the derived slot (_1d). Returns (value, iso_datetime) or (None, None).
-    """
-    obs = (station or {}).get("OBSERVATIONS") or {}
-    for key in (f"{var}_value_1", f"{var}_value_1d"):
-        v = obs.get(key)
-        if isinstance(v, dict) and v.get("value") is not None:
-            return v.get("value"), v.get("date_time")
-    return None, None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Smart dedup — numerical bucketing + max-silence backstop
