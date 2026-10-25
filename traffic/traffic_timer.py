@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from common import (
     clamp, http_get_json, load_state, save_state,
     respond_silent, respond_multi, log, log_error,
+    TZ,
 )
 
 TAG = "traffic"
@@ -332,7 +333,7 @@ def stable_wp_id(eid):
 
 def fmt_unix_ts(raw):
     try:
-        return datetime.fromtimestamp(int(raw)).strftime("%Y-%m-%d %H:%M")
+        return datetime.fromtimestamp(int(raw), TZ).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return "??-??-??"
 
