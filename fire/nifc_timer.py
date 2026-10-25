@@ -297,8 +297,12 @@ def main():
                                       "lon": round(float(inc["lon"]),5), "expire": int(now - 1),  # past expiry = delete
                                       "channel": WP_CHANNEL})
                 prior["out_announced"] = True
-            (prior or state.setdefault(sid, {}))["last_seen"] = now
-            state[sid] = prior or state[sid]
+            if prior:
+                prior["last_seen"] = now
+                state[sid] = prior
+            else:
+                # never tracked: it was never announced, so announce nothing
+                state[sid] = {"last_seen": now, "out_announced": True}
             continue
 
         # ---- NEW ----
